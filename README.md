@@ -10,17 +10,17 @@ This script generate Windows Short with a fake displayed target, but launch a di
 
 # Usage
 
-```python
+```powershell
 python lnkswitch_generator.py --target "C:\Windows\System32\calc.exe" \
    --display "C:\Users\Mohamed\Documents\BTS-Cyber-Securite.pdf" \
    --read-only \
    --output bts.lnk
 ```
 
-`--target` is the real file that is launched on click
-`--display` is the displayed file path in properties box
-`--read-only` prevent explorer.exe to recreate the lnk on icon change, destroying the trick (showing real target in properties box)
-`--output` really man ??
+- `--target` is the real file that is launched on click
+- `--display` is the displayed file path in properties box
+- `--read-only` prevent explorer.exe to recreate the lnk on icon change, destroying the trick (showing real target in properties box)
+- `--output` really man ??
 
 ---
 

@@ -1,6 +1,8 @@
 # LNK target spoofing generator
 ---
 
+> Originally inspired by [Wietze](https://github.com/wietze) on his [Link-It-Up](https://github.com/wietze/lnk-it-up) project !
+
 This script generate Windows Short with a fake displayed target, but launch a different file on click !
 
 1. The Specified displayed decoy and the real executed target must exist on the system

@@ -10,7 +10,7 @@ This script generate Windows Short with a fake displayed target, but launch a di
 
 # Usage
 
-```
+```python
 python lnkswitch_generator.py --target "C:\Windows\System32\calc.exe" \
    --display "C:\Users\Mohamed\Documents\BTS-Cyber-Securite.pdf" \
    --read-only \

@@ -1,16 +1,16 @@
-# LNK target spoofing generator
+# Générateur de spoofing de cible LNK
 ---
 
-> Originally inspired by [Wietze](https://github.com/wietze) on his [Link-It-Up](https://github.com/wietze/lnk-it-up) project !
+> Inspiré à l'origine par [Wietze](https://github.com/wietze) et son projet [Link-It-Up](https://github.com/wietze/lnk-it-up) !
 
-This script generate Windows Short with a fake displayed target, but launch a different file on click !
+Ce script génère un raccourci Windows avec une fausse cible affichée, mais lance un fichier différent au clic !
 
-1. The Specified displayed decoy and the real executed target must exist on the system
-2. The LNK icon depend on the specified decoy file type
+1. Le leurre affiché spécifié et la cible réellement exécutée doivent exister sur le système
+2. L'icône du LNK dépend du type de fichier leurre spécifié
 
 ---
 
-# Usage
+# Utilisation
 
 ```powershell
 python lnkswitch_generator.py --target "C:\Windows\System32\calc.exe" \
@@ -19,12 +19,12 @@ python lnkswitch_generator.py --target "C:\Windows\System32\calc.exe" \
    --output bts.lnk
 ```
 
-- `--target` is the real file that is launched on click
-- `--display` is the displayed file path in properties box
-- `--read-only` prevent explorer.exe to recreate the lnk on icon change, destroying the trick (showing real target in properties box)
-- `--output` really man ??
+- `--target` est le vrai fichier lancé au clic
+- `--display` est le chemin affiché dans la fenêtre Propriétés
+- `--read-only` empêche explorer.exe de recréer le lnk lors d'un changement d'icône, ce qui détruit l'astuce (et affiche la vraie cible dans Propriétés)
+- `--output` vraiment ??
 
 ---
 
-Actually Icon auto changing system doesn't work (tested on 11 25H2) Explorer fail to manage icon indexes in Shell32 or imageres. No idea how to come through
-If you can contribute that would be a lot ❤️
+Actuellement, le système de changement automatique d'icône ne fonctionne pas (testé sur Windows 11 25H2). Explorer ne gère pas correctement les index d'icônes dans Shell32 ou imageres. Aucune idée pour contourner ça pour l'instant.
+Si vous pouvez contribuer, ce serait top 

